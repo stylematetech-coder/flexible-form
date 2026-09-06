@@ -1,0 +1,17 @@
+node_modules/
+.venv/
+logs/
+.pids/
+.data/
+.tools/
+__pycache__/
+*.pyc
+dist/
+.env.local
+.env
+shots/
+chrome-tmp/
+chrome-tmp-*/
+scripts/.pids/
+*.log
+.DS_Store
