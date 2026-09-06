@@ -15,13 +15,16 @@
 5. 「部署上線」→ http://localhost:5175/f/demo
 6. 可選：歷史版本「回滾」
 
-## A2. AI 對話（MOCK）
+## A2. AI 對話（Ollama Cloud / MOCK）
 
 1. 編輯頁右側「AI 對話」
 2. 輸入例如：`加一題滿意度評分` → 送出
 3. 看到回覆與變更摘要 → 按「套用到草稿」→ 卡片刷新
 4. 再試：`刪掉滿意度`、`改標題春季問卷`
-5. 未設定 `OPENAI_API_KEY` 時走 MOCK；有 key 則走 OpenAI-compatible API
+5. AI 優先順序：
+   - 設定 `OLLAMA_API_KEY`（於 https://ollama.com/settings/keys 建立）→ Ollama Cloud（預設模型 `gpt-oss:20b`，可用免費 starter 模型測試）
+   - 否則有 `OPENAI_API_KEY` → OpenAI-compatible API
+   - 否則走 MOCK
 
 curl 範例（MOCK）：
 

@@ -1,6 +1,6 @@
 # flexible-form（問卷微服務 Demo）
 
-獨立問卷微服務：設計工作室（Designer）+ 填寫端（Runtime）+ FastAPI / MongoDB 後端。支援 **AI 對話改稿**（zh-TW MOCK 或 OpenAI）。
+獨立問卷微服務：設計工作室（Designer）+ 填寫端（Runtime）+ FastAPI / MongoDB 後端。支援 **AI 對話改稿**（zh-TW：Ollama Cloud 優先，其次 OpenAI，否則 MOCK）。
 
 ## 架構
 
@@ -26,14 +26,21 @@ Designer / Runtime 透過 Vite proxy 將 /api 轉到 http://127.0.0.1:8000。
 
 ## AI 對話改稿
 
-編輯頁右側有 **AI 對話** 面板：
+編輯頁右側有 **AI 對話** 面板。優先順序：
 
-- **未設定 `OPENAI_API_KEY`**：使用內建 **MOCK**，可解析簡單中文意圖，例如：
-  - 「加一題滿意度評分」→ 新增題目
-  - 「刪掉就讀學校」→ 依標題/id 子字串刪題
-  - 「改標題春季問卷」→ 更新 schema 標題（套用時寫入）
-- **有設定 `OPENAI_API_KEY`**：呼叫 OpenAI-compatible chat，依目前 definition + 對話回傳 JSON 定義更新。
-  - 可選：`OPENAI_BASE_URL`（預設 `https://api.openai.com/v1`）、`OPENAI_MODEL`（預設 `gpt-4o-mini`）
+1. **`OLLAMA_API_KEY`（推薦）**：呼叫 [Ollama Cloud](https://ollama.com) `POST /api/chat`（原生 `format: "json"`），依目前 definition + 對話回傳 JSON 定義更新。
+   - 建立 API key：https://ollama.com/settings/keys
+   - 匯出：`export OLLAMA_API_KEY=...`（或寫入 `backend/.env`）
+   - 可選：`OLLAMA_BASE_URL`（預設 `https://ollama.com`）、`OLLAMA_MODEL`（預設 `gpt-oss:20b`）
+   - 測試可用免費 starter 模型／`gpt-oss:20b`
+2. **`OPENAI_API_KEY`（備援）**：OpenAI-compatible chat。
+   - 可選：`OPENAI_BASE_URL`（預設 `https://api.openai.com/v1`）、`OPENAI_MODEL`（預設 `gpt-4o-mini`）
+3. **皆未設定**：內建 **MOCK**，可解析簡單中文意圖，例如：
+   - 「加一題滿意度評分」→ 新增題目
+   - 「刪掉就讀學校」→ 依標題/id 子字串刪題
+   - 「改標題春季問卷」→ 更新 schema 標題（套用時寫入）
+
+Ollama / OpenAI 呼叫失敗時會回退 MOCK，並在回覆前綴錯誤說明。
 
 AI 回傳 `proposed_definition` 時，UI 顯示變更摘要與「套用到草稿」；套用會寫入目前 DRAFT（若無則自動建立）。
 
@@ -71,7 +78,11 @@ schemas / schema_versions / responses（字串 id）。已發布版本不可變�
 MONGO_URI=mongodb://localhost:27017
 MONGO_DB=form_service
 CORS_ORIGINS=*
-# 可選 AI：
+# 推薦 AI（Ollama Cloud）：
+# OLLAMA_API_KEY=          # https://ollama.com/settings/keys
+# OLLAMA_BASE_URL=https://ollama.com
+# OLLAMA_MODEL=gpt-oss:20b
+# 備援 AI（OpenAI-compatible）：
 # OPENAI_API_KEY=
 # OPENAI_BASE_URL=https://api.openai.com/v1
 # OPENAI_MODEL=gpt-4o-mini

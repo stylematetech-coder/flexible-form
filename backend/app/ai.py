@@ -1,4 +1,4 @@
-"""Pluggable AI for form definition edits (OpenAI-compatible or deterministic MOCK)."""
+"""Pluggable AI for form definition edits (Ollama Cloud, OpenAI-compatible, or deterministic MOCK)."""
 from __future__ import annotations
 
 import copy
@@ -131,13 +131,139 @@ def mock_chat(
 
     if not replies:
         return (
-            "我是 MOCK AI（未設定 OPENAI_API_KEY）。可試：「加一題滿意度評分」、「刪掉就讀學校」、「改標題春季問卷」。",
+            "我是 MOCK AI（未設定 OLLAMA_API_KEY / OPENAI_API_KEY）。可試：「加一題滿意度評分」、「刪掉就讀學校」、「改標題春季問卷」。",
             None,
             None,
         )
 
     reply = " ".join(replies) + " 請按「套用到草稿」套用變更。"
     return reply, proposed, new_title
+
+
+def _assistant_system_prompt() -> str:
+    return (
+        "你是問卷設計助理。根據目前的 form definition 與使用者對話，"
+        "回傳 JSON（不要 markdown）："
+        '{"reply":"短繁中回覆","proposed_definition":{完整 FormDefinition 物件或 null},"schema_title":"可選新標題或 null"}。'
+        "FormDefinition 結構：version, locale, settings{require_identity, one_response_per}, "
+        "steps[{id,type,title,required,options[{value,label}],showIf|{field,op,value}|null}]。"
+        "type 僅限 single|multi|text|textarea|number|info。"
+        "若無變更，proposed_definition 為 null。"
+    )
+
+
+def _build_context_user_message(
+    definition: dict[str, Any],
+    messages: list[dict[str, str]],
+    schema_title: str | None,
+) -> dict[str, str]:
+    return {
+        "role": "user",
+        "content": json.dumps(
+            {
+                "schema_title": schema_title,
+                "current_definition": definition,
+                "messages": messages,
+            },
+            ensure_ascii=False,
+        ),
+    }
+
+
+def _strip_markdown_fences(text: str) -> str:
+    s = (text or "").strip()
+    if not s.startswith("```"):
+        return s
+    s = re.sub(r"^```(?:json|JSON)?\s*\n?", "", s)
+    s = re.sub(r"\n?```\s*$", "", s)
+    return s.strip()
+
+
+def _parse_ai_json_content(content: str) -> tuple[str, dict[str, Any] | None, str | None]:
+    """Parse model JSON content into (reply, proposed_definition, schema_title).
+
+    On parse failure return a clear zh-TW error reply and proposed_definition=null.
+    """
+    raw = _strip_markdown_fences(content)
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        m = re.search(r"\{[\s\S]*\}", raw)
+        if not m:
+            return (
+                "模型回傳無法解析為 JSON，請再試一次或改用更簡短的指令。",
+                None,
+                None,
+            )
+        try:
+            parsed = json.loads(m.group(0))
+        except Exception:
+            return (
+                "模型回傳無法解析為 JSON，請再試一次或改用更簡短的指令。",
+                None,
+                None,
+            )
+
+    if not isinstance(parsed, dict):
+        return ("模型回傳格式不正確（非物件），請再試一次。", None, None)
+
+    reply = str(parsed.get("reply") or "已處理。")
+    proposed = parsed.get("proposed_definition")
+    title = parsed.get("schema_title")
+    if proposed is not None and not isinstance(proposed, dict):
+        proposed = None
+    if title is not None:
+        title = str(title) or None
+    return reply, proposed, title
+
+
+def ollama_cloud_chat(
+    definition: dict[str, Any],
+    messages: list[dict[str, str]],
+    schema_title: str | None = None,
+) -> tuple[str, dict[str, Any] | None, str | None]:
+    """Call Ollama Cloud chat; expect JSON with reply + proposed_definition (+ optional schema_title)."""
+    import urllib.request
+
+    api_key = os.getenv("OLLAMA_API_KEY", "").strip()
+    base = os.getenv("OLLAMA_BASE_URL", "https://ollama.com").rstrip("/")
+    model = os.getenv("OLLAMA_MODEL", "gpt-oss:20b")
+
+    payload_msgs = [
+        {"role": "system", "content": _assistant_system_prompt()},
+        _build_context_user_message(definition, messages, schema_title),
+    ]
+
+    body = json.dumps(
+        {
+            "model": model,
+            "messages": payload_msgs,
+            "stream": False,
+            "format": "json",
+        }
+    ).encode("utf-8")
+
+    req = urllib.request.Request(
+        f"{base}/api/chat",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=90) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+
+    message = data.get("message") or {}
+    content = message.get("content") if isinstance(message, dict) else None
+    if content is None:
+        return (
+            "Ollama 回傳缺少 message.content，請稍後再試。",
+            None,
+            None,
+        )
+    return _parse_ai_json_content(str(content))
 
 
 def openai_chat(
@@ -152,29 +278,10 @@ def openai_chat(
     base = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
-    system = (
-        "你是問卷設計助理。根據目前的 form definition 與使用者對話，"
-        "回傳 JSON（不要 markdown）："
-        '{"reply":"短繁中回覆","proposed_definition":{完整 FormDefinition 物件或 null},"schema_title":"可選新標題或 null"}。'
-        "FormDefinition 結構：version, locale, settings{require_identity, one_response_per}, "
-        "steps[{id,type,title,required,options[{value,label}],showIf|{field,op,value}|null}]。"
-        "type 僅限 single|multi|text|textarea|number|info。"
-        "若無變更，proposed_definition 為 null。"
-    )
-    payload_msgs = [{"role": "system", "content": system}]
-    payload_msgs.append(
-        {
-            "role": "user",
-            "content": json.dumps(
-                {
-                    "schema_title": schema_title,
-                    "current_definition": definition,
-                    "messages": messages,
-                },
-                ensure_ascii=False,
-            ),
-        }
-    )
+    payload_msgs = [
+        {"role": "system", "content": _assistant_system_prompt()},
+        _build_context_user_message(definition, messages, schema_title),
+    ]
 
     body = json.dumps(
         {
@@ -198,15 +305,7 @@ def openai_chat(
         data = json.loads(resp.read().decode("utf-8"))
 
     content = data["choices"][0]["message"]["content"]
-    parsed = json.loads(content)
-    reply = str(parsed.get("reply") or "已處理。")
-    proposed = parsed.get("proposed_definition")
-    title = parsed.get("schema_title")
-    if proposed is not None and not isinstance(proposed, dict):
-        proposed = None
-    if title is not None:
-        title = str(title) or None
-    return reply, proposed, title
+    return _parse_ai_json_content(str(content))
 
 
 def run_ai_chat(
@@ -214,6 +313,12 @@ def run_ai_chat(
     messages: list[dict[str, str]],
     schema_title: str | None = None,
 ) -> tuple[str, dict[str, Any] | None, str | None]:
+    if os.getenv("OLLAMA_API_KEY", "").strip():
+        try:
+            return ollama_cloud_chat(definition, messages, schema_title)
+        except Exception as e:
+            reply, proposed, title = mock_chat(definition, messages, schema_title)
+            return f"（Ollama 呼叫失敗，改用 MOCK：{e}）{reply}", proposed, title
     if os.getenv("OPENAI_API_KEY", "").strip():
         try:
             return openai_chat(definition, messages, schema_title)
