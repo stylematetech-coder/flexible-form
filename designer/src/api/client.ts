@@ -1,11 +1,17 @@
 import type { FormDefinition, Schema, Version } from "../types";
+import { getOwnerToken } from "./owner";
 
 const BASE = "/api";
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = getOwnerToken();
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
     ...init,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+      ...(init?.headers || {}),
+    },
   });
   if (!res.ok) {
     const text = await res.text();
