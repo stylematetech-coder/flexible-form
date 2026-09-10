@@ -37,6 +37,7 @@ export interface Schema {
   title: string;
   status: string;
   active_version: number | null;
+  owner_id?: string | null;
   created_at: string;
   updated_at: string;
 }
