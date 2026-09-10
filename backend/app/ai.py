@@ -8,6 +8,11 @@ import re
 from typing import Any
 from ulid import ULID
 
+from .ai_generate import (
+    _is_from_scratch_intent,
+    _synthesize_full_form,
+)
+
 
 def _new_step_id() -> str:
     return f"s_{str(ULID()).lower()[:10]}"
@@ -21,13 +26,13 @@ def _infer_step_type(title: str) -> str:
     t = title.lower()
     if any(k in title for k in ("複選", "多選", "可複選")) or "multi" in t:
         return "multi"
-    if any(k in title for k in ("單選", "選擇", "身份", "類型")):
+    if any(k in title for k in ("單選", "選擇", "身份", "類型", "滿意度等級")):
         return "single"
-    if any(k in title for k in ("分數", "評分", "數量", "幾", "年齡")) or "number" in t:
+    if any(k in title for k in ("分數", "評分", "數量", "幾", "年齡", "星")) or "number" in t:
         return "number"
-    if any(k in title for k in ("建議", "說明", "描述", "意見", "備註")):
+    if any(k in title for k in ("建議", "說明", "描述", "意見", "備註", "回饋")):
         return "textarea"
-    if any(k in title for k in ("提示", "說明文字", "資訊")):
+    if any(k in title for k in ("提示", "說明文字", "資訊", "歡迎")):
         return "info"
     return "text"
 
@@ -48,7 +53,12 @@ def mock_chat(
 ) -> tuple[str, dict[str, Any] | None, str | None]:
     """Parse simple zh-TW intents. Returns (reply, proposed_definition, new_schema_title)."""
     if not messages:
-        return "請告訴我要怎麼調整問卷，例如「加一題滿意度」或「刪掉就讀學校」。", None, None
+        return (
+            "請告訴我要怎麼調整問卷，例如「加一題滿意度」、「刪掉就讀學校」，"
+            "或從零口述「幫我做一份顧客滿意度問卷」。",
+            None,
+            None,
+        )
 
     user_text = ""
     for m in reversed(messages):
@@ -56,14 +66,25 @@ def mock_chat(
             user_text = (m.get("content") or "").strip()
             break
     if not user_text:
-        return "請輸入中文指令，例如「加一題…」「刪掉…」「改標題…」。", None, None
+        return "請輸入中文指令，例如「加一題…」「刪掉…」「改標題…」或「幫我做一份…問卷」。", None, None
 
     proposed = _clone_def(definition)
     steps: list[dict[str, Any]] = list(proposed.get("steps") or [])
+    steps_empty = len(steps) == 0
     new_title: str | None = None
     replies: list[str] = []
 
-    # Rename schema title: 「改標題…」 / 「標題改成…」 / 「把標題改為…」
+    if _is_from_scratch_intent(user_text, steps_empty):
+        gen_steps, gen_title = _synthesize_full_form(user_text)
+        proposed["steps"] = gen_steps
+        new_title = gen_title
+        replies.append(
+            f"已依您的口述產生完整問卷「{gen_title}」（共 {len(gen_steps)} 題）。"
+            "可再調整個別題目，或繼續用指令微調。"
+        )
+        reply = " ".join(replies) + " 請按「套用到草稿」套用變更。"
+        return reply, proposed, new_title
+
     title_patterns = [
         r"(?:改標題|標題改成|把標題改為|標題設為|更改標題)[為成：:\s]*(.+)$",
         r"把[「『\"]?(.+?)[」』\"]?[標題]?改成[「『\"]?(.+?)[」』\"]?",
@@ -79,7 +100,6 @@ def mock_chat(
                 replies.append(f"已將問卷標題改為「{new_title}」。")
             break
 
-    # Also match simpler: 改標題XXX without separator if previous didn't match
     if new_title is None:
         m = re.match(r"^改標題\s*(.+)$", user_text)
         if m:
@@ -87,7 +107,6 @@ def mock_chat(
             if new_title:
                 replies.append(f"已將問卷標題改為「{new_title}」。")
 
-    # Delete step: 「刪掉…」 / 「刪除…」 / 「移除…」
     del_m = re.search(
         r"(?:刪掉|刪除|移除)[題目卡片問題項]*[「『\"]?(.+?)[」』\"]?\s*$",
         user_text,
@@ -107,7 +126,6 @@ def mock_chat(
             else:
                 replies.append(f"找不到標題或 id 含「{key}」的題目，未做變更。")
 
-    # Add step: 「加一題…」 / 「新增一題…」 / 「加入一題…」
     add_m = re.search(
         r"(?:加一題|新增一題|加入一題|加題|新增題目|加一個題目)[：:\s]*(.+)$",
         user_text,
@@ -131,7 +149,9 @@ def mock_chat(
 
     if not replies:
         return (
-            "我是 MOCK AI（未設定 OLLAMA_API_KEY / OPENAI_API_KEY）。可試：「加一題滿意度評分」、「刪掉就讀學校」、「改標題春季問卷」。",
+            "我是 MOCK AI（未設定 OLLAMA_API_KEY / OPENAI_API_KEY）。"
+            "可試：「幫我做一份顧客滿意度問卷，含評分與建議」、"
+            "「加一題滿意度評分」、「刪掉就讀學校」、「改標題春季問卷」。",
             None,
             None,
         )
@@ -142,13 +162,18 @@ def mock_chat(
 
 def _assistant_system_prompt() -> str:
     return (
-        "你是問卷設計助理。根據目前的 form definition 與使用者對話，"
+        "你是問卷設計助理（繁體中文 zh-TW）。根據目前的 form definition 與使用者對話，"
         "回傳 JSON（不要 markdown）："
         '{"reply":"短繁中回覆","proposed_definition":{完整 FormDefinition 物件或 null},"schema_title":"可選新標題或 null"}。'
         "FormDefinition 結構：version, locale, settings{require_identity, one_response_per}, "
         "steps[{id,type,title,required,options[{value,label}],showIf|{field,op,value}|null}]。"
         "type 僅限 single|multi|text|textarea|number|info。"
-        "若無變更，proposed_definition 為 null。"
+        "\n"
+        "重要能力——從零口述生成："
+        "若使用者說「做一份／幫我做／產生／建立問卷／從零…」，或 current_definition.steps 為空且提到問卷主題，"
+        "請產生完整多步驟定義（建議 4–8 題），含 info／單選／複選／評分／建議等合理題型，並給合適 schema_title。"
+        "僅增量修改時可只改部分 steps；若無變更，proposed_definition 為 null。"
+        "新步驟 id 請用簡短唯一字串（例如 s_ 開頭）。"
     )
 
 
@@ -157,6 +182,13 @@ def _build_context_user_message(
     messages: list[dict[str, str]],
     schema_title: str | None,
 ) -> dict[str, str]:
+    steps = definition.get("steps") or []
+    bias = ""
+    if not steps:
+        bias = (
+            "（提示：目前草稿沒有任何題目。若使用者在描述問卷主題，"
+            "請直接產出完整多步驟 proposed_definition，不要只回覆文字。）"
+        )
     return {
         "role": "user",
         "content": json.dumps(
@@ -164,6 +196,7 @@ def _build_context_user_message(
                 "schema_title": schema_title,
                 "current_definition": definition,
                 "messages": messages,
+                "hint": bias or None,
             },
             ensure_ascii=False,
         ),
@@ -180,29 +213,17 @@ def _strip_markdown_fences(text: str) -> str:
 
 
 def _parse_ai_json_content(content: str) -> tuple[str, dict[str, Any] | None, str | None]:
-    """Parse model JSON content into (reply, proposed_definition, schema_title).
-
-    On parse failure return a clear zh-TW error reply and proposed_definition=null.
-    """
     raw = _strip_markdown_fences(content)
     try:
         parsed = json.loads(raw)
     except Exception:
         m = re.search(r"\{[\s\S]*\}", raw)
         if not m:
-            return (
-                "模型回傳無法解析為 JSON，請再試一次或改用更簡短的指令。",
-                None,
-                None,
-            )
+            return ("模型回傳無法解析為 JSON，請再試一次或改用更簡短的指令。", None, None)
         try:
             parsed = json.loads(m.group(0))
         except Exception:
-            return (
-                "模型回傳無法解析為 JSON，請再試一次或改用更簡短的指令。",
-                None,
-                None,
-            )
+            return ("模型回傳無法解析為 JSON，請再試一次或改用更簡短的指令。", None, None)
 
     if not isinstance(parsed, dict):
         return ("模型回傳格式不正確（非物件），請再試一次。", None, None)
@@ -222,7 +243,6 @@ def ollama_cloud_chat(
     messages: list[dict[str, str]],
     schema_title: str | None = None,
 ) -> tuple[str, dict[str, Any] | None, str | None]:
-    """Call Ollama Cloud chat; expect JSON with reply + proposed_definition (+ optional schema_title)."""
     import urllib.request
 
     api_key = os.getenv("OLLAMA_API_KEY", "").strip()
@@ -235,21 +255,13 @@ def ollama_cloud_chat(
     ]
 
     body = json.dumps(
-        {
-            "model": model,
-            "messages": payload_msgs,
-            "stream": False,
-            "format": "json",
-        }
+        {"model": model, "messages": payload_msgs, "stream": False, "format": "json"}
     ).encode("utf-8")
 
     req = urllib.request.Request(
         f"{base}/api/chat",
         data=body,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=90) as resp:
@@ -258,11 +270,7 @@ def ollama_cloud_chat(
     message = data.get("message") or {}
     content = message.get("content") if isinstance(message, dict) else None
     if content is None:
-        return (
-            "Ollama 回傳缺少 message.content，請稍後再試。",
-            None,
-            None,
-        )
+        return ("Ollama 回傳缺少 message.content，請稍後再試。", None, None)
     return _parse_ai_json_content(str(content))
 
 
@@ -271,7 +279,6 @@ def openai_chat(
     messages: list[dict[str, str]],
     schema_title: str | None = None,
 ) -> tuple[str, dict[str, Any] | None, str | None]:
-    """Call OpenAI-compatible chat; expect JSON with reply + proposed_definition (+ optional schema_title)."""
     import urllib.request
 
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
@@ -295,10 +302,7 @@ def openai_chat(
     req = urllib.request.Request(
         f"{base}/chat/completions",
         data=body,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=60) as resp:
@@ -323,7 +327,6 @@ def run_ai_chat(
         try:
             return openai_chat(definition, messages, schema_title)
         except Exception as e:
-            # Fall back to mock with error note
             reply, proposed, title = mock_chat(definition, messages, schema_title)
             return f"（OpenAI 呼叫失敗，改用 MOCK：{e}）{reply}", proposed, title
     return mock_chat(definition, messages, schema_title)
