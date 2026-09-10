@@ -8,6 +8,15 @@ from .db import get_db, ensure_indexes
 def seed_demo(force: bool = False):
     db = get_db()
     ensure_indexes()
+    # Backfill owner_id for any legacy docs (local demo continuity)
+    db.schemas.update_many(
+        {"owner_id": {"$exists": False}},
+        {"$set": {"owner_id": "anonymous"}},
+    )
+    db.schemas.update_many(
+        {"owner_id": None},
+        {"$set": {"owner_id": "anonymous"}},
+    )
     existing = db.schemas.find_one({"slug": "demo"})
     if existing and not force:
         print(f"demo schema already exists: {existing['id']}")
@@ -98,6 +107,7 @@ def seed_demo(force: bool = False):
             "title": "示範問卷",
             "status": "published",
             "active_version": 1,
+            "owner_id": "anonymous",
             "created_at": now,
             "updated_at": now,
         }
